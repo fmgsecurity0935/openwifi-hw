@@ -207,7 +207,7 @@ set_property -name "compxlib.questa_compiled_library_dir" -value "$proj_dir/${pr
 set_property -name "compxlib.riviera_compiled_library_dir" -value "$proj_dir/${project_name}.cache/compile_simlib/riviera" -objects $obj
 set_property -name "compxlib.timesim" -value "1" -objects $obj
 set_property -name "compxlib.vcs_compiled_library_dir" -value "$proj_dir/${project_name}.cache/compile_simlib/vcs" -objects $obj
-set_property -name "compxlib.xsim_compiled_library_dir" -value "" -objects $obj
+set_property -name "compxlib.xsim_compiled_library_dir" -value "$proj_dir/${project_name}.cache/compile_simlib/xsim" -objects $obj
 set_property -name "corecontainer.enable" -value "0" -objects $obj
 set_property -name "default_lib" -value "xil_defaultlib" -objects $obj
 set_property -name "dsa.num_compute_units" -value "60" -objects $obj
@@ -260,6 +260,8 @@ set files [list \
  "[file normalize "$origin_dir/src/xpu.v"]"\
  "[file normalize "$origin_dir/src/cw_exp.v"]"\
  "[file normalize "$origin_dir/src/edge_to_flip.v"]"\
+ "[file normalize "$origin_dir/src/opp_viterbi_k7.v"]"\
+ "[file normalize "$origin_dir/src/opp_5mhz_lsig.v"]"\
 ]
 add_files -norecurse -fileset $obj $files
 

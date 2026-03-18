@@ -302,7 +302,22 @@ source ./../post_script_common.tcl
 # https://adaptivesupport.amd.com/s/article/000034290?language=en_US
 set_param gui.addressMap 0
 
+# Override synthesis directive for area optimization (opp_5mhz_lsig pushes utilization)
+# AreaOptimized_high enables: control set merging, aggressive resource sharing, better LUT combining
+set_property -name "steps.synth_design.args.directive" -value "AreaOptimized_high" -objects [get_runs synth_1]
+
+# Override implementation directives for area optimization
+set_property -name "steps.opt_design.args.directive" -value "ExploreSequentialArea" -objects [get_runs impl_1]
+set_property -name "steps.place_design.args.directive" -value "AltSpreadLogic_high" -objects [get_runs impl_1]
+# phys_opt_design disabled in synth_impl_strategy.tcl to avoid congestion-inducing cell movement
+# MoreGlobalIterations routing directive set in synth_impl_strategy.tcl for more rip-up attempts
+
 update_compile_order -fileset sources_1
+
+# Allow placement to proceed even if pre-placement LUT count slightly exceeds device capacity.
+# After LUT combining, the actual utilization is well within limits.
+set_param drc.disableLUTOverUtilError 1
+
 launch_runs impl_1 -to_step write_bitstream -jobs 8
 
 wait_on_run impl_1

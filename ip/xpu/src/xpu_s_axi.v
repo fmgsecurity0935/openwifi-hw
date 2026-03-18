@@ -50,18 +50,18 @@
         output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG29,
         output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG30,
         output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG31,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG32,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG33,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG34,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG35,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG36,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG37,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG38,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG39,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG40,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG41,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG42,
-        //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG43,
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG32,  // OPP config (CPU R/W)
+        input   wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG33,  // OPP detect_count (FPGA RO)
+        input   wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG34,  // OPP tx_count (FPGA RO)
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG35,  // OPP TX: rate[7:0] + frame_len[19:8]
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG36,  // OPP TX: src_mac[31:0]
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG37,  // OPP TX: src_mac[47:32] (bits[15:0])
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG38,  // OPP TX: bssid[31:0]
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG39,  // OPP TX: bssid[47:32] (bits[15:0])
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG40,  // OPP v9: max_frame_us (DIFS filter)
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG41,  // OPP v9: dst_mac[31:0]
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG42,  // OPP v9: dst_mac[47:32]
+        output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG43, // v17: L-SIG STF threshold
         //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG44,
         //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG45,
         //output  wire [C_S_AXI_DATA_WIDTH-1:0] SLV_REG46,
@@ -202,18 +202,19 @@
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg29;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg30;
 	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg31;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg32;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg33;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg34;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg35;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg36;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg37;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg38;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg32;  // OPP config (CPU writable)
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg33;  // OPP detect_count (latched from FPGA)
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg34;  // OPP tx_count (latched from FPGA)
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg35;  // OPP TX config: rate + frame_len
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg36;  // OPP TX src_mac[31:0]
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg37;  // OPP TX src_mac[47:32]
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg38;  // OPP TX bssid[31:0]
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg39;  // OPP TX bssid[47:32]
 	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg39;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg40;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg41;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg42;
-	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg43;
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg40;  // OPP v9: max_frame_us (DIFS filter)
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg41;  // OPP v9: dst_mac[31:0]
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg42;  // OPP v9: dst_mac[47:32]
+	reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg43; // v17: L-SIG STF threshold
 	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg44;
 	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg45;
 	//reg [C_S_AXI_DATA_WIDTH-1:0]	slv_reg46;
@@ -283,18 +284,23 @@
     assign SLV_REG29 = slv_reg29;
     assign SLV_REG30 = slv_reg30;
     assign SLV_REG31 = slv_reg31;
-	// assign SLV_REG32 = slv_reg32;
+	assign SLV_REG32 = slv_reg32;
 	// assign SLV_REG33 = slv_reg33;
 	// assign SLV_REG34 = slv_reg34;
+	assign SLV_REG35 = slv_reg35;
+	assign SLV_REG36 = slv_reg36;
+	assign SLV_REG37 = slv_reg37;
+	assign SLV_REG38 = slv_reg38;
+	assign SLV_REG39 = slv_reg39;
 	// assign SLV_REG35 = slv_reg35;
 	// assign SLV_REG36 = slv_reg36;
 	// assign SLV_REG37 = slv_reg37;
 	// assign SLV_REG38 = slv_reg38;
 	// assign SLV_REG39 = slv_reg39;
-	// assign SLV_REG40 = slv_reg40;
-	// assign SLV_REG41 = slv_reg41;
-	// assign SLV_REG42 = slv_reg42;
-	// assign SLV_REG43 = slv_reg43;
+	assign SLV_REG40 = slv_reg40;
+	assign SLV_REG41 = slv_reg41;
+	assign SLV_REG42 = slv_reg42;
+	assign SLV_REG43 = slv_reg43;
 	// assign SLV_REG44 = slv_reg44;
 	// assign SLV_REG45 = slv_reg45;
 	// assign SLV_REG46 = slv_reg46;
@@ -428,18 +434,18 @@
 	      slv_reg29 <= 32'h0;
 	      slv_reg30 <= 32'h0;
 	      slv_reg31 <= 32'h0;
-		//   slv_reg32 <= 32'h0;
-		//   slv_reg33 <= 32'h0;
-		//   slv_reg34 <= 32'h0;
-		//   slv_reg35 <= 32'h0;
-		//   slv_reg36 <= 32'h0;
-		//   slv_reg37 <= 32'h0;
-		//   slv_reg38 <= 32'h0;
-		//   slv_reg39 <= 32'h0;
-		//   slv_reg40 <= 32'h0;
-		//   slv_reg41 <= 32'h0;
-		//   slv_reg42 <= 32'h0;
-		//   slv_reg43 <= 32'h0;
+	      slv_reg32 <= 32'h0;
+	   // slv_reg33 driven by user logic block (SLV_REG33 latch) — do NOT reset here (multi-driver conflict)
+	   // slv_reg34 driven by user logic block (SLV_REG34 latch) — do NOT reset here
+	      slv_reg35 <= 32'h0;  // OPP TX rate=0x09(24Mbps) + frame_len=44 default: set by opp_init.sh
+	      slv_reg36 <= 32'h0;  // OPP TX src_mac[31:0]: set by opp_init.sh
+	      slv_reg37 <= 32'h0;  // OPP TX src_mac[47:32]: set by opp_init.sh
+	      slv_reg38 <= 32'h0;  // OPP TX bssid[31:0]: set by opp_init.sh
+	      slv_reg39 <= 32'h0;  // OPP TX bssid[47:32]: set by opp_init.sh
+	      slv_reg40 <= 32'h0;  // OPP v9: max_frame_us
+	      slv_reg41 <= 32'h0;  // OPP v9: dst_mac[31:0]
+	      slv_reg42 <= 32'h0;  // OPP v9: dst_mac[47:32]
+		   slv_reg43 <= 32'h0;  // v17: L-SIG STF threshold (0=default 5000)
 		//   slv_reg44 <= 32'h0;
 		//   slv_reg45 <= 32'h0;
 		//   slv_reg46 <= 32'h0;
@@ -674,13 +680,44 @@
 	                // Slave register 19
 	                slv_reg31[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
 	              end
-			//   6'h20:
-	        //     for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
-	        //       if ( S_AXI_WSTRB[byte_index] == 1 ) begin
-	        //         // Respective byte enables are asserted as per write strobes 
-	        //         // Slave register 19
-	        //         slv_reg32[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	        //       end
+			  6'h20:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                // OPP config register (slv_reg32)
+	                slv_reg32[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	              end
+		  6'h23:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg35[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+		  6'h24:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg36[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+		  6'h25:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg37[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+		  6'h26:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg38[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+		  6'h27:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg39[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+		  6'h28:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg40[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+		  6'h29:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg41[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+		  6'h2A:
+	            for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	              if ( S_AXI_WSTRB[byte_index] == 1 )
+	                slv_reg42[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
 			//   6'h21:
 	        //     for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	        //       if ( S_AXI_WSTRB[byte_index] == 1 ) begin
@@ -751,13 +788,11 @@
 	        //         // Slave register 19
 	        //         slv_reg42[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
 	        //       end
-			//   6'h2B:
-	        //     for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
-	        //       if ( S_AXI_WSTRB[byte_index] == 1 ) begin
-	        //         // Respective byte enables are asserted as per write strobes 
-	        //         // Slave register 19
-	        //         slv_reg43[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
-	        //       end
+			   6'h2B:
+	             for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
+	               if ( S_AXI_WSTRB[byte_index] == 1 ) begin
+	                 slv_reg43[(byte_index*8) +: 8] <= S_AXI_WDATA[(byte_index*8) +: 8];
+	               end
 			//   6'h2C:
 	        //     for ( byte_index = 0; byte_index <= (C_S_AXI_DATA_WIDTH/8)-1; byte_index = byte_index+1 )
 	        //       if ( S_AXI_WSTRB[byte_index] == 1 ) begin
@@ -975,18 +1010,18 @@
 	        6'h1D   : reg_data_out <= slv_reg29;
 	        6'h1E   : reg_data_out <= slv_reg30;
 	        6'h1F   : reg_data_out <= slv_reg31;
-	        //6'h20   : reg_data_out <= slv_reg32;
-	        //6'h21   : reg_data_out <= slv_reg33;
-	        //6'h22   : reg_data_out <= slv_reg34;
-	        //6'h23   : reg_data_out <= slv_reg35;
-	        //6'h24   : reg_data_out <= slv_reg36;
-	        //6'h25   : reg_data_out <= slv_reg37;
-	        //6'h26   : reg_data_out <= slv_reg38;
-	        //6'h27   : reg_data_out <= slv_reg39;
-	        //6'h28   : reg_data_out <= slv_reg40;
-	        //6'h29   : reg_data_out <= slv_reg41;
-	        //6'h2A   : reg_data_out <= slv_reg42;
-	        //6'h2B   : reg_data_out <= slv_reg43;
+	        6'h20   : reg_data_out <= slv_reg32;
+	        6'h21   : reg_data_out <= slv_reg33;
+	        6'h22   : reg_data_out <= slv_reg34;
+	        6'h23   : reg_data_out <= slv_reg35;
+	        6'h24   : reg_data_out <= slv_reg36;
+	        6'h25   : reg_data_out <= slv_reg37;
+	        6'h26   : reg_data_out <= slv_reg38;
+	        6'h27   : reg_data_out <= slv_reg39;
+	        6'h28   : reg_data_out <= slv_reg40;
+	        6'h29   : reg_data_out <= slv_reg41;
+	        6'h2A   : reg_data_out <= slv_reg42;
+	        6'h2B   : reg_data_out <= slv_reg43;
 	        //6'h2C   : reg_data_out <= slv_reg44;
 	        //6'h2D   : reg_data_out <= slv_reg45;
 	        //6'h2E   : reg_data_out <= slv_reg46;
@@ -1063,6 +1098,8 @@
           //slv_reg54 <= SLV_REG54;
           //slv_reg55 <= SLV_REG55;
           //slv_reg56 <= SLV_REG56;
+          slv_reg33 <= SLV_REG33;
+          slv_reg34 <= SLV_REG34;
           slv_reg57 <= SLV_REG57;
           slv_reg58 <= SLV_REG58;
           slv_reg59 <= SLV_REG59;

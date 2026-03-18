@@ -542,16 +542,16 @@ set_property -name "steps.post_place_power_opt_design.is_enabled" -value "0" -ob
 set_property -name "steps.post_place_power_opt_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.post_place_power_opt_design.tcl.post" -value "" -objects $obj
 set_property -name "steps.post_place_power_opt_design.args.more options" -value "" -objects $obj
-set_property -name "steps.phys_opt_design.is_enabled" -value "1" -objects $obj
+set_property -name "steps.phys_opt_design.is_enabled" -value "0" -objects $obj
 set_property -name "steps.phys_opt_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.phys_opt_design.tcl.post" -value "" -objects $obj
 set_property -name "steps.phys_opt_design.args.directive" -value "Explore" -objects $obj
 set_property -name "steps.phys_opt_design.args.more options" -value "" -objects $obj
 set_property -name "steps.route_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.route_design.tcl.post" -value "" -objects $obj
-set_property -name "steps.route_design.args.directive" -value "NoTimingRelaxation" -objects $obj
-set_property -name "steps.route_design.args.more options" -value "-tns_cleanup" -objects $obj
-set_property -name "steps.post_route_phys_opt_design.is_enabled" -value "1" -objects $obj
+set_property -name "steps.route_design.args.directive" -value "MoreGlobalIterations" -objects $obj
+set_property -name "steps.route_design.args.more options" -value "" -objects $obj
+set_property -name "steps.post_route_phys_opt_design.is_enabled" -value "0" -objects $obj
 set_property -name "steps.post_route_phys_opt_design.tcl.pre" -value "" -objects $obj
 set_property -name "steps.post_route_phys_opt_design.tcl.post" -value "" -objects $obj
 set_property -name "steps.post_route_phys_opt_design.args.directive" -value "Explore" -objects $obj

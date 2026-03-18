@@ -188,18 +188,18 @@ module xpu #
   wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg29; // self bssid
   wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg30; // mac addr
   wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg31; // mac addr
-//wire [C_S00_AXI_DATA_WIDTH-1:0]	slv_reg32;
-//wire [C_S00_AXI_DATA_WIDTH-1:0]	slv_reg33;
-//wire [C_S00_AXI_DATA_WIDTH-1:0]	slv_reg34;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg35;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg36;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg37;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg38;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg39;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg40;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg41;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg42;
-  //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg43;
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg32; // OPP: config (CPU R/W)
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg33; // OPP: detect_count (FPGA RO)
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg34; // OPP: tx_count (FPGA RO)
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg35; // OPP TX: rate[7:0] + frame_len[19:8]
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg36; // OPP TX: src_mac[31:0]
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg37; // OPP TX: src_mac[47:32]
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg38; // OPP TX: bssid[31:0]
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg39; // OPP TX: bssid[47:32]
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg40; // OPP v9: max_frame_us (DIFS filter)
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg41; // OPP v9: dst_mac[31:0]
+  wire [(C_S00_AXI_DATA_WIDTH-1):0] slv_reg42; // OPP v9: dst_mac[47:32]
+  wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg43; // v17: L-SIG STF power threshold (0=default 5000)
   //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg44;
   //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg45;
   //wire [(C_S00_AXI_DATA_WIDTH-1):0]	slv_reg46;
@@ -367,13 +367,274 @@ module xpu #
   
   assign slv_reg62 = {addr2[23:16],addr2[31:24],addr2[39:32],addr2[47:40]};
 
-  assign slv_reg57 = {gpio_status_delay[6:0],iq_rssi_half_db,1'b0,(~ch_idle_final),(tx_core_is_ongoing|tx_bb_is_ongoing|tx_rf_is_ongoing|cts_toself_rf_is_ongoing|ack_cts_is_ongoing), demod_is_ongoing,(~gpio_status_delay[7]),rssi_half_db};//rssi_half_db 11bit, iq_rssi_half_db 9bit
+  // v17: slv_reg57 conditional — L-SIG debug when opp_use_lsig=1
+  // L-SIG debug format: [31:16]=stf_power_hi, [15:12]=lsig_rate, [11:8]=fsm_state,
+  //   [7:6]=stf_plateau[5:4], [5]=lsig_valid_sticky, [4]=pkt_end_pulse, [3:0]=stf_plateau[3:0]
+  assign slv_reg57 = opp_use_lsig ?
+    {lsig_debug_stf_power_hi, lsig_rate, lsig_debug_fsm,
+     lsig_debug_stf_plateau[5:4], lsig_debug_valid_sticky, lsig_pkt_end_pulse, lsig_debug_stf_plateau[3:0]} :
+    {gpio_status_delay[6:0],iq_rssi_half_db,1'b0,(~ch_idle_final),(tx_core_is_ongoing|tx_bb_is_ongoing|tx_rf_is_ongoing|cts_toself_rf_is_ongoing|ack_cts_is_ongoing), demod_is_ongoing,(~gpio_status_delay[7]),rssi_half_db};
 
   assign SC_fragment_number = SC[3:0];
   assign SC_sequence_number = SC[15:4];
   
   assign slv_reg58 = tsf_runtime_val[(C_S00_AXI_DATA_WIDTH-1):0];
   assign slv_reg59 = tsf_runtime_val[(TSF_TIMER_WIDTH-1):C_S00_AXI_DATA_WIDTH];
+
+  // ── Opportunistic TX (OPP) v14 ──────────────────────────────────────────
+  // slv_reg32[0]     : opp_enable           (CPU R/W)
+  // slv_reg32[1]     : opp_use_iq_rssi      1=hybrid, 0=legacy rssi_half_db
+  // slv_reg32[2]     : opp_fpga_tx_enable   1=FPGA direct TX (v7), 0=user-space poll (v6)
+  // slv_reg32[3]     : opp_target_difs      0=SIFS broadcast(v8), 1=DIFS unicast+ACK(v9)
+  // slv_reg32[4]     : opp_use_demod_edge   1=demod falling edge(v10), 0=iq_rssi
+  // slv_reg32[7:5]   : opp_hyst_width       v14: hysteresis width (0-7, default 4)
+  // slv_reg32[11:8]  : opp_front_margin_us  앞 마진 대기 시간 (default 4us)
+  // slv_reg32[15:12] : opp_back_margin_us   뒤 마진 (SW 검증용, default 4us)
+  // slv_reg32[23:16] : opp_min_frame_us     최소 유효 프레임 길이 (default 50us)
+  // slv_reg32[31:24] : opp_iq_rssi_th       iq_rssi threshold (default 80)
+  //
+  // v14 hysteresis (opp_use_iq_rssi=1, opp_use_demod_edge=0):
+  //   BUSY: iq_rssi >= threshold + hyst_width (확실히 프레임 수신)
+  //   IDLE: iq_rssi <  threshold - hyst_width (확실히 SIFS gap)
+  //   dead zone: 현재 상태 유지 → iq_rssi 변동에 의한 flickering 차단
+  //   - threshold=80, hyst=4 → BUSY≥84, IDLE<76 (측정: idle=70-76, frame=85-97)
+
+  wire       opp_enable;
+  wire       opp_use_iq_rssi;
+  wire       opp_fpga_tx_enable;
+  wire [3:0] opp_front_margin_us;
+  wire [3:0] opp_back_margin_us;
+  wire [7:0] opp_min_frame_us;
+  wire [7:0] opp_iq_rssi_th_8b;
+  wire       opp_tx_active;
+  // v7 OPP TX config
+  wire [7:0]  opp_tx_rate;
+  wire [11:0] opp_tx_frame_len;
+  wire [47:0] opp_tx_src_mac;
+  wire [47:0] opp_tx_bssid;
+  // v9 DIFS mode: unicast DATA+ACK during 5MHz DIFS gap
+  wire        opp_target_difs;   // 0=SIFS broadcast(v8), 1=DIFS unicast+ACK(v9)
+  wire [7:0]  opp_max_frame_us;  // busy_dur upper bound for ACK-frame detection
+  wire [47:0] opp_tx_dst_mac;    // 20MHz STA MAC (unicast destination)
+  // v10: demod falling edge SIFS detection
+  wire        opp_use_demod_edge; // slv_reg32[4]: 1=demod falling edge, 0=iq_rssi legacy
+  // v15: L-SIG based packet-end prediction
+  wire        opp_use_lsig;       // slv_reg35[20]: 1=L-SIG decode, 0=iq_rssi/demod
+  reg         opp_tx_trigger;
+  reg  [63:0] opp_tsf_at_trigger;
+
+  assign opp_enable           = slv_reg32[0];
+  assign opp_use_iq_rssi      = slv_reg32[1];
+  assign opp_fpga_tx_enable   = slv_reg32[2];
+  assign opp_target_difs      = slv_reg32[3];   // v9: 0=SIFS broadcast, 1=DIFS unicast+ACK
+  assign opp_use_demod_edge   = slv_reg32[4];   // v10: 1=demod falling edge SIFS detection
+  assign opp_use_lsig         = slv_reg35[20];  // v15: 1=L-SIG packet-end prediction
+  assign opp_front_margin_us  = slv_reg32[11:8];
+  assign opp_back_margin_us   = slv_reg32[15:12];
+  assign opp_min_frame_us     = slv_reg32[23:16];
+  assign opp_iq_rssi_th_8b    = slv_reg32[31:24];
+  assign opp_tx_active        = (tx_rf_is_ongoing | tx_bb_is_ongoing | ack_cts_is_ongoing);
+  assign opp_tx_rate          = slv_reg35[7:0];
+  assign opp_tx_frame_len     = slv_reg35[19:8];
+  assign opp_tx_src_mac       = {slv_reg37[15:0], slv_reg36[31:0]};
+  assign opp_tx_bssid         = {slv_reg39[15:0], slv_reg38[31:0]};
+  // v9 DIFS mode registers:
+  //   slv_reg40[7:0]  : opp_max_frame_us  (busy_dur upper bound; 5MHz ACK ~100-180µs → set 200)
+  //   slv_reg41[31:0] : opp_tx_dst_mac[31:0]  (20MHz STA MAC lower 4B)
+  //   slv_reg42[15:0] : opp_tx_dst_mac[47:32] (20MHz STA MAC upper 2B)
+  assign opp_max_frame_us     = slv_reg40[7:0];
+  assign opp_tx_dst_mac       = {slv_reg42[15:0], slv_reg41[31:0]};
+
+  // Legacy: rssi_half_db 기반 (v4)
+  wire ch_idle_rssi;
+  assign ch_idle_rssi = (rssi_half_db <= $signed(rssi_half_db_th));
+
+  // v14: hysteresis ch_idle_iq — 2개 threshold로 flickering 방지
+  // BUSY: iq_rssi >= threshold + hyst_width → 확실히 프레임 수신 중
+  // IDLE: iq_rssi <  threshold - hyst_width → 확실히 SIFS gap
+  // dead zone: 현재 상태 유지 (노이즈에 의한 전환 차단)
+  wire [2:0] opp_hyst_width;
+  assign opp_hyst_width = slv_reg32[7:5];  // 3비트 (0-7), default 4
+
+  reg ch_idle_iq_reg;
+  always @(posedge s00_axi_aclk) begin
+    if (~s00_axi_aresetn)
+      ch_idle_iq_reg <= 1;
+    else if ($unsigned(iq_rssi_half_db) >= ({1'b0, opp_iq_rssi_th_8b} + {6'b0, opp_hyst_width}))
+      ch_idle_iq_reg <= 0;  // BUSY: 상위 threshold 초과
+    else if ($unsigned(iq_rssi_half_db) < ({1'b0, opp_iq_rssi_th_8b} - {6'b0, opp_hyst_width}))
+      ch_idle_iq_reg <= 1;  // IDLE: 하위 threshold 미만
+    // else: dead zone — 현재 상태 유지
+  end
+  wire ch_idle_iq;
+  assign ch_idle_iq = ch_idle_iq_reg & (~demod_is_ongoing) & (~opp_tx_active);
+
+  wire ch_idle_for_opp;
+  assign ch_idle_for_opp = opp_use_iq_rssi ? ch_idle_iq : ch_idle_rssi;
+
+  // v15: L-SIG decoder instance
+  wire        lsig_valid;
+  wire [3:0]  lsig_rate;
+  wire [11:0] lsig_length;
+  wire        lsig_pkt_end_pulse;
+  wire [15:0] lsig_pkt_remaining_us;
+  // v17 L-SIG debug wires
+  wire [3:0]  lsig_debug_fsm;
+  wire [5:0]  lsig_debug_stf_plateau;
+  wire [15:0] lsig_debug_stf_power_hi;
+  wire        lsig_debug_valid_sticky;
+
+  opp_5mhz_lsig opp_lsig_i (
+    .clk(s00_axi_aclk),
+    .rst_n(s00_axi_aresetn),
+    .iq_i(ddc_i),
+    .iq_q(ddc_q),
+    .iq_valid(ddc_iq_valid),
+    .lsig_valid(lsig_valid),
+    .lsig_rate(lsig_rate),
+    .lsig_length(lsig_length),
+    .pkt_end_pulse(lsig_pkt_end_pulse),
+    .pkt_remaining_us(lsig_pkt_remaining_us),
+    .tsf_pulse_1M(tsf_pulse_1M),
+    .debug_fsm(lsig_debug_fsm),
+    .debug_stf_plateau(lsig_debug_stf_plateau),
+    .debug_stf_power_hi(lsig_debug_stf_power_hi),
+    .debug_lsig_valid_sticky(lsig_debug_valid_sticky),
+    .stf_power_th_reg(slv_reg43)
+  );
+
+  reg         ch_idle_prev;
+  reg  [15:0] opp_busy_dur_us;
+  reg  [7:0]  opp_margin_timer;
+  reg  [31:0] opp_detect_count_reg;
+  reg  [31:0] opp_tx_count_reg;
+  // v12: OPP TX 이후 80µs 고정 쿨다운 타이머 (iq_rssi 신호 의존 완전 제거)
+  // 방지 대상: OPP TX 종료 → iq_rssi 감소 → ch_idle=1 → 즉시 재트리거 루프
+  reg  [7:0]  opp_cooldown;
+  // v10: demod falling edge detection (per-frame SIFS)
+  reg         demod_prev;         // previous cycle demod_is_ongoing
+
+  always @(posedge s00_axi_aclk) begin
+    ch_idle_prev   <= ch_idle_for_opp;
+    demod_prev     <= demod_is_ongoing;   // v10: edge detection
+    opp_tx_trigger <= 0;  // default: no trigger (1-clock pulse)
+
+    if (opp_use_lsig) begin
+      // ── v15: L-SIG 기반 정밀 패킷 종료 예측 ──────────────────────────────
+      // opp_5mhz_lsig 모듈이 5MHz preamble 디코딩 → RATE+LENGTH → duration timer
+      // lsig_pkt_end_pulse = 프레임 종료 예측 시점 (SIFS 시작)
+
+      // 쿨다운 타이머: OPP TX 후 즉시 재트리거 방지
+      if (opp_tx_trigger)
+        opp_cooldown <= 8'd10;
+      else if (opp_cooldown > 0 && tsf_pulse_1M)
+        opp_cooldown <= opp_cooldown - 1;
+
+      // L-SIG 패킷 종료 펄스 → margin timer 시작
+      // SIFS-only: LENGTH > 50 = DATA/TCP-ACK 프레임 후 (SIFS gap)
+      //            LENGTH ≤ 50 = WiFi ACK(14B) 후 (DIFS gap) → skip
+      if (lsig_pkt_end_pulse & opp_enable & (~opp_tx_active) & (opp_cooldown == 0)
+          & (lsig_length > 12'd50)) begin
+        opp_margin_timer     <= {4'b0, opp_front_margin_us};
+        opp_detect_count_reg <= opp_detect_count_reg + 1;
+      end else if ((~ch_idle_iq) & (opp_margin_timer > 0)) begin
+        // Safety: iq_rssi BUSY during margin wait → cancel (frame still ongoing)
+        opp_margin_timer <= 0;
+      end else if (opp_margin_timer > 0 && tsf_pulse_1M) begin
+        opp_margin_timer <= opp_margin_timer - 1;
+        if (opp_margin_timer == 1) begin
+          opp_tx_count_reg <= opp_tx_count_reg + 1;
+          if (opp_fpga_tx_enable) begin
+            opp_tx_trigger     <= 1;
+            opp_tsf_at_trigger <= tsf_runtime_val;
+          end
+        end
+      end
+
+    end else if (opp_use_demod_edge) begin
+      // ── v10: demod falling edge 기반 per-frame SIFS 감지 ──────────────────
+      // demod_is_ongoing HIGH 구간이 곧 5MHz 프레임 수신 구간 = busy
+      // 장점: iq_rssi 스무딩 없음 → 개별 SIFS 포착 가능 (~272/sec)
+      // 무한루프 방지: OPP TX 후 demod가 이미 LOW → 새 rising+falling 엣지 필요
+
+      // 채널 busy 지속 시간 (demod HIGH 구간 = 프레임 수신 시간)
+      if (demod_is_ongoing) begin
+        if (tsf_pulse_1M && opp_busy_dur_us < 16'hFFFF)
+          opp_busy_dur_us <= opp_busy_dur_us + 1;
+      end else begin
+        opp_busy_dur_us <= 0;
+      end
+
+      // demod 하강 엣지 → SIFS 시작 → margin timer 시작
+      if (demod_prev & (~demod_is_ongoing) & opp_enable & (~opp_tx_active)
+          & (opp_busy_dur_us >= {8'b0, opp_min_frame_us})
+          & (~opp_target_difs | (opp_busy_dur_us <= {8'b0, opp_max_frame_us}))) begin
+        opp_margin_timer     <= {4'b0, opp_front_margin_us};
+        opp_detect_count_reg <= opp_detect_count_reg + 1;
+      end else if (demod_is_ongoing & (opp_margin_timer > 0)) begin
+        // 새 5MHz 프레임 도착 → SIFS 이미 끝남 → margin timer 취소
+        opp_margin_timer <= 0;
+      end else if (opp_margin_timer > 0 && tsf_pulse_1M) begin
+        opp_margin_timer <= opp_margin_timer - 1;
+        if (opp_margin_timer == 1) begin
+          opp_tx_count_reg <= opp_tx_count_reg + 1;
+          if (opp_fpga_tx_enable) begin
+            opp_tx_trigger     <= 1;
+            opp_tsf_at_trigger <= tsf_runtime_val;
+          end
+        end
+      end
+
+    end else begin
+      // ── v12: 80µs 쿨다운 타이머 기반 SIFS 감지 ───────────────────────────
+      // opp_wait_for_frame(iq_rssi/demod 신호 의존) 완전 제거 → 고정 타이머로 대체
+      // 이유: 5MHz ACK = 72µs 슬로우모션 → iq_rssi IIR 평균이 threshold까지 못 올라감
+      //       → wait_for_frame 영구 stuck → v10/v11 동일 성능 (~0.27/s) 원인
+      // 수정: OPP TX 후 tsf_pulse_1M(1µs tick)으로 80카운트 → 자동 해제
+      //       80µs 후 = SIFS(64µs) 이후 → 5MHz ACK 완료 후 첫 DIFS 때 재트리거 허용
+      if (opp_tx_trigger)
+        opp_cooldown <= 8'd10;          // v13c: 10µs 쿨다운 (v10: 80µs → 연속 SIFS 트리거 가능)
+      else if (opp_cooldown > 0 && tsf_pulse_1M)
+        opp_cooldown <= opp_cooldown - 1;  // 1µs씩 카운트다운
+
+      // 채널 busy 지속 시간 측정 (1us 단위)
+      if (~ch_idle_for_opp) begin
+        if (tsf_pulse_1M && opp_busy_dur_us < 16'hFFFF)
+          opp_busy_dur_us <= opp_busy_dur_us + 1;
+      end else begin
+        opp_busy_dur_us <= 0;
+      end
+
+      // SIFS/DIFS 감지: RSSI idle 상승 엣지 + 프레임 길이 조건
+      if ((~ch_idle_prev) & ch_idle_for_opp & opp_enable & (~opp_tx_active)
+          & (opp_cooldown == 0)         // v12: 80µs 쿨다운 완료 후에만 트리거 허용
+          & (opp_busy_dur_us >= {8'b0, opp_min_frame_us})
+          & (~opp_target_difs | (opp_busy_dur_us <= {8'b0, opp_max_frame_us}))) begin
+        opp_margin_timer     <= {4'b0, opp_front_margin_us};
+        opp_detect_count_reg <= opp_detect_count_reg + 1;
+      end else if ((~ch_idle_for_opp) & (opp_margin_timer > 0)) begin
+        // v13c: margin wait 중 채널 busy → timer 취소 (프레임 도중 TX 방지)
+        opp_margin_timer <= 0;
+      end else if (opp_margin_timer > 0 && tsf_pulse_1M) begin
+        opp_margin_timer <= opp_margin_timer - 1;
+        if (opp_margin_timer == 1) begin
+          opp_tx_count_reg <= opp_tx_count_reg + 1;
+          if (opp_fpga_tx_enable) begin
+            opp_tx_trigger     <= 1;
+            opp_tsf_at_trigger <= tsf_runtime_val;
+          end
+        end
+      end
+    end
+  end
+
+  assign slv_reg33 = opp_detect_count_reg;
+  assign slv_reg34 = opp_tx_count_reg;
+  // v15 L-SIG debug: slv_reg57 bits reused when opp_use_lsig=1
+  // Additional debug via existing OPP monitor:
+  //   busybox devmem 0x83C40084 → detect_count (L-SIG valid count)
+  //   busybox devmem 0x83C40088 → tx_count
+  //   lsig_rate/length/remaining available via lsig_* wires (for future reg exposure)
 
   assign pkt_for_me = (addr1==mac_addr);
 
@@ -606,7 +867,18 @@ module xpu #
     .wea(wea),
     .addra(addra),
     .dina(dina),
-    .douta(douta)
+    .douta(douta),
+
+    // OPP v7: FPGA direct TX
+    .opp_tx_trigger(opp_tx_trigger),
+    .opp_tx_rate(opp_tx_rate),
+    .opp_tx_frame_len(opp_tx_frame_len),
+    .opp_tx_src_mac(opp_tx_src_mac),
+    .opp_tx_bssid(opp_tx_bssid),
+    .opp_tsf_payload(opp_tsf_at_trigger),
+    // OPP v9: DIFS unicast+ACK
+    .opp_target_difs(opp_target_difs),
+    .opp_tx_dst_mac(opp_tx_dst_mac)
   );
 
   pkt_filter_ctl #(
@@ -832,15 +1104,15 @@ xpu_s_axi # (
   //.SLV_REG32(slv_reg32),
   //.SLV_REG33(slv_reg33),
   //.SLV_REG34(slv_reg34),
-  //.SLV_REG35(slv_reg35),
-  //.SLV_REG36(slv_reg36),
-  //.SLV_REG37(slv_reg37),
-  //.SLV_REG38(slv_reg38),
-  //.SLV_REG39(slv_reg39),
-  //.SLV_REG40(slv_reg40),
-  //.SLV_REG41(slv_reg41),
-  //.SLV_REG42(slv_reg42),
-  //.SLV_REG43(slv_reg43),
+  .SLV_REG35(slv_reg35),
+  .SLV_REG36(slv_reg36),
+  .SLV_REG37(slv_reg37),
+  .SLV_REG38(slv_reg38),
+  .SLV_REG39(slv_reg39),
+  .SLV_REG40(slv_reg40),
+  .SLV_REG41(slv_reg41),
+  .SLV_REG42(slv_reg42),
+  .SLV_REG43(slv_reg43), // v17: L-SIG STF threshold
   /*
   .SLV_REG44(slv_reg44),
   .SLV_REG45(slv_reg45),
@@ -855,6 +1127,9 @@ xpu_s_axi # (
   .SLV_REG54(slv_reg54),
   .SLV_REG55(slv_reg55),
   .SLV_REG56(slv_reg56),*/
+  .SLV_REG32(slv_reg32),
+  .SLV_REG33(slv_reg33),
+  .SLV_REG34(slv_reg34),
   .SLV_REG57(slv_reg57),
   .SLV_REG58(slv_reg58),
   .SLV_REG59(slv_reg59),

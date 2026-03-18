@@ -73,6 +73,17 @@
         input wire [3:0] qos_tid,
         input wire [1:0] qos_ack_policy,
 
+        // OPP v7: FPGA direct TX
+        input wire        opp_tx_trigger,
+        input wire [7:0]  opp_tx_rate,
+        input wire [11:0] opp_tx_frame_len,
+        input wire [47:0] opp_tx_src_mac,
+        input wire [47:0] opp_tx_bssid,
+        input wire [63:0] opp_tsf_payload,
+        // OPP v9: DIFS unicast+ACK
+        input wire        opp_target_difs,
+        input wire [47:0] opp_tx_dst_mac,
+
         output wire [3:0] tx_control_state_out,
         output wire tx_control_state_idle,
         output wire ack_cts_is_ongoing,
@@ -95,7 +106,9 @@
                       SEND_BLK_ACK=              4'b0011,
                       RECV_ACK_WAIT_TX_BB_DONE = 4'b0100,
                       RECV_ACK_WAIT_SIG_VALID =  4'b0101,
-                      RECV_ACK  =                4'b0110;
+                      RECV_ACK  =                4'b0110,
+                      SEND_OPP  =                4'b0111, // OPP v7/v8: FPGA direct TX
+                      RECV_OPP_ACK =             4'b1000; // OPP v9: wait for unicast ACK (no retransmit)
 
   `DEBUG_PREFIX wire [3:0] retrans_limit;
   `DEBUG_PREFIX reg [3:0] num_retrans;
@@ -159,6 +172,9 @@
   reg [14:0] recv_ack_timeout_top_adj_scale;
   `DEBUG_PREFIX reg retrans_started;
 
+  // OPP v7 state
+  reg [63:0] opp_tsf_payload_lock;
+
   assign tx_control_state_out  = tx_control_state;
   assign tx_control_state_idle =((tx_control_state==IDLE) && (~retrans_started));
 
@@ -173,7 +189,7 @@
   assign is_rts =         (((FC_type==2'b01) && (FC_subtype==4'b1011) && (signal_len==20))?1:0);
   assign is_ack =         (((FC_type==2'b01) && (FC_subtype==4'b1101) && (signal_len==14))?1:0);
 
-  assign ack_cts_is_ongoing = ((tx_control_state==PREP_ACK) || (tx_control_state==SEND_DFL_ACK) || (tx_control_state==SEND_BLK_ACK));
+  assign ack_cts_is_ongoing = ((tx_control_state==PREP_ACK) || (tx_control_state==SEND_DFL_ACK) || (tx_control_state==SEND_BLK_ACK) || (tx_control_state==SEND_OPP));
   assign ackcts_signal_parity = (~(^ackcts_rate));//because the cts and ack pkt length field is always 14: 1110 that always has 3 1s
   assign ackcts_signal_len = 14;
   assign blkack_signal_len = 32;
@@ -250,6 +266,7 @@
           send_ack_wait_top_scale_lock <=0;
           recv_ack_sig_valid_timeout_top_scale <= 0;
           recv_ack_timeout_top_adj_scale <= 0;
+          opp_tsf_payload_lock <= 0;
         end
       else begin
         tx_control_state_old<=tx_control_state;
@@ -398,6 +415,14 @@
                     retrans_started <= 1;
                   end
               end
+            // OPP v7: FPGA direct TX — lowest priority, only when truly idle
+            else if (opp_tx_trigger && (retrans_in_progress==0))
+              begin
+                tx_control_state     <= SEND_OPP;
+                ack_tx_flag          <= 1;
+                start_tx_ack         <= 1;
+                opp_tsf_payload_lock <= opp_tsf_payload;
+              end
           end
 
           PREP_ACK: begin // data is calculated by calc_phy_header C program
@@ -494,6 +519,64 @@
                 end
             end else if (bram_addr==5) begin
                 dina<={32'h0, blk_ack_bitmap_lock[63:32]};
+            end
+          end
+
+          // OPP v7/v8: broadcast DATA during 5MHz SIFS gap (opp_target_difs=0)
+          // OPP v9:    unicast DATA during 5MHz DIFS gap  (opp_target_difs=1)
+          // Frame: FC=0x0208(Data,fromDS), Dur=0
+          //   v7/v8: Addr1=FF:FF:FF:FF:FF:FF (broadcast, no ACK)
+          //   v9:    Addr1=opp_tx_dst_mac    (unicast, 20MHz STA → auto ACK)
+          //        Addr2=src_mac, Addr3=bssid, SeqCtrl=0
+          //        Payload[0..7]=TSF@trigger
+          SEND_OPP: begin
+            start_tx_ack <= 0;
+            if (phy_tx_done) begin
+              // v9 DIFS unicast: wait for ACK from STA (no retransmit)
+              // v7/v8 SIFS broadcast: return to IDLE immediately
+              tx_control_state <= opp_target_difs ? RECV_OPP_ACK : IDLE;
+            end
+            if (bram_addr == 0) begin
+              // SIGNAL field: {32'h0, 14'd0, parity, len[11:0], 1'b0, rate[3:0]}
+              dina <= {32'h0, 14'd0,
+                       ^{opp_tx_rate[3:0], 1'b0, opp_tx_frame_len},
+                       opp_tx_frame_len,
+                       1'b0,
+                       opp_tx_rate[3:0]};
+            end else if (bram_addr == 2) begin
+              // FC(2B)=0x0208 + Duration(2B)=0 + Addr1[31:0]
+              dina <= {opp_target_difs ? opp_tx_dst_mac[31:0] : 32'hFFFFFFFF,
+                       16'h0000, 8'h02, 8'h08};
+            end else if (bram_addr == 3) begin
+              // Addr1[47:32] + Addr2[47:0]=src_mac
+              dina <= {opp_tx_src_mac,
+                       opp_target_difs ? opp_tx_dst_mac[47:32] : 16'hFFFF};
+            end else if (bram_addr == 4) begin
+              // Addr3[47:0]=bssid + SeqCtrl(2B)=0
+              dina <= {16'h0000, opp_tx_bssid};
+            end else if (bram_addr == 5) begin
+              // Payload[0..7] = TSF timestamp at SIFS/DIFS moment
+              dina <= opp_tsf_payload_lock;
+            end else begin
+              dina <= 64'h0;
+            end
+          end
+
+          // OPP v9: wait for ACK from 20MHz STA after unicast DATA
+          // Best-effort: no retransmission on timeout, just return to IDLE
+          RECV_OPP_ACK: begin
+            ack_timeout_count <= ack_timeout_count + 1;
+            if ((ack_timeout_count < recv_ack_timeout_top)
+                && (fcs_in_strobe && is_ack)
+                && (self_mac_addr == addr1)) begin
+              // ACK received successfully
+              tx_control_state  <= IDLE;
+              tx_try_complete   <= 1;
+              retrans_in_progress <= 0;
+            end else if (ack_timeout_count == recv_ack_timeout_top) begin
+              // ACK timeout: best-effort, no retransmit
+              tx_control_state  <= IDLE;
+              retrans_in_progress <= 0;
             end
           end
 
