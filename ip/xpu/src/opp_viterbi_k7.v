@@ -26,12 +26,12 @@ reg [4:0] cnt;        // 0..23 data bit counter
 reg [5:0] state;      // {u[n-1], u[n-2], u[n-3], u[n-4], u[n-5], u[n-6]}
 reg       running;
 
-// g1 = 171o = 1111001 in binary
-// Taps at positions {0, 3, 4, 5, 6} of the 7-bit register
-// output_1 = u[n] ^ u[n-3] ^ u[n-4] ^ u[n-5] ^ u[n-6]
-// Solving: u[n] = coded_bits[2n+1] ^ u[n-3] ^ u[n-4] ^ u[n-5] ^ u[n-6]
-//                = coded_bits[2n+1] ^ state[2] ^ state[3] ^ state[4] ^ state[5]
-wire decoded_bit = coded_bits[{cnt, 1'b1}] ^ state[2] ^ state[3] ^ state[4] ^ state[5];
+// g1 = 171o = 1111001 in binary (MSB=bit6 to LSB=bit0)
+// Non-zero bit positions: {6, 5, 4, 3, 0}
+// c1[n] = u[n] ^ u[n-1] ^ u[n-2] ^ u[n-3] ^ u[n-6]
+// Solving: u[n] = coded_bits[2n+1] ^ u[n-1] ^ u[n-2] ^ u[n-3] ^ u[n-6]
+//                = coded_bits[2n+1] ^ state[5] ^ state[4] ^ state[3] ^ state[0]
+wire decoded_bit = coded_bits[{cnt, 1'b1}] ^ state[5] ^ state[4] ^ state[3] ^ state[0];
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin

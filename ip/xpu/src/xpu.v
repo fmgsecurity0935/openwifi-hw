@@ -537,9 +537,8 @@ module xpu #
           & (lsig_length > 12'd50)) begin
         opp_margin_timer     <= {4'b0, opp_front_margin_us};
         opp_detect_count_reg <= opp_detect_count_reg + 1;
-      end else if ((~ch_idle_iq) & (opp_margin_timer > 0)) begin
-        // Safety: iq_rssi BUSY during margin wait → cancel (frame still ongoing)
-        opp_margin_timer <= 0;
+      // v15 L-SIG: safety cancel 제거 — L-SIG duration이 정밀하므로
+      // iq_rssi가 pkt_end_pulse 직후 아직 높아도 정상 (IIR 지연)
       end else if (opp_margin_timer > 0 && tsf_pulse_1M) begin
         opp_margin_timer <= opp_margin_timer - 1;
         if (opp_margin_timer == 1) begin

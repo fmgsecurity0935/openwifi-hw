@@ -1,13 +1,18 @@
-// opp_5mhz_lsig.v — Minimal 5MHz L-SIG decoder for OPP packet-end prediction
-// v15f: 8-bit DFT precision, Q-path removed, running twiddle phase counter
+// opp_5mhz_lsig.v — 5MHz L-SIG decoder for OPP packet-end prediction
+// v22: v19 dual-DFT architecture (LTF ch_sign + L-SIG demod) + v21 ce gating
 //
-// Changes from v15e:
-//   - DFT samples/twiddle: 16-bit → 8-bit (Q7 fixed-point)
-//   - DFT accumulator: 24-bit → 16-bit
-//   - cmult_q removed entirely (BPSK only needs Re sign)
-//   - dft_sum_q removed
-//   - Twiddle index: 2× 6x6 multiply → running 6-bit phase counter
-//   - Net savings: ~200-400 LUT, 2 DSP, ~80 FF
+// v19 had correct L-SIG decoding but WNS=-1.861ns (timing violations)
+// v21 had ce gating solving timing (WNS=-0.423ns) but no LTF → decode failed
+// v22 combines both: dual DFT with ce gating for timing + channel estimation
+//
+// Architecture:
+//   CIC 4:1 (20→5MHz) → STF detect → collect LTF(64) + skip(80) + L-SIG(64)
+//   → DFT pass 1: LTF → ch_sign[47:0] (channel estimation)
+//   → DFT pass 2: L-SIG → equalized BPSK demod
+//   → Viterbi → parity check → duration countdown → pkt_end_pulse
+//
+// CE gating: DFT/Viterbi/Duration states run at effective 50MHz (20ns budget)
+//            CIC, STF, sample collection remain at full 100MHz
 
 module opp_5mhz_lsig (
     input  wire        clk,           // 100MHz system clock
@@ -21,16 +26,24 @@ module opp_5mhz_lsig (
     output reg         pkt_end_pulse,
     output reg  [15:0] pkt_remaining_us,
     input  wire        tsf_pulse_1M,
-    // v17 debug outputs
+    // debug outputs
     output wire [3:0]  debug_fsm,
     output wire [5:0]  debug_stf_plateau,
     output wire [15:0] debug_stf_power_hi,
     output wire        debug_lsig_valid_sticky,
-    input  wire [31:0] stf_power_th_reg   // configurable STF threshold
+    input  wire [31:0] stf_power_th_reg
 );
 
 // ============================================================================
-// Section 1: CIC 4:1 Decimator (20MHz → 5MHz) — full 16-bit precision
+// Section 0: Clock Enable — halves effective frequency for DFT+ states
+// ============================================================================
+reg ce;
+always @(posedge clk or negedge rst_n)
+    if (!rst_n) ce <= 0;
+    else        ce <= ~ce;
+
+// ============================================================================
+// Section 1: CIC 4:1 Decimator (20MHz → 5MHz) — UNGATED
 // ============================================================================
 reg signed [17:0] acc_i, acc_q;
 reg [1:0]  dec_cnt;
@@ -66,7 +79,7 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 // ============================================================================
-// Section 2: STF Detector (energy-based, full 16-bit precision)
+// Section 2: STF Detector (energy-based) — UNGATED
 // ============================================================================
 (* use_dsp = "yes" *) wire [31:0] cur_power = dec_i * dec_i + dec_q * dec_q;
 
@@ -98,45 +111,51 @@ always @(posedge clk or negedge rst_n) begin
 end
 
 // ============================================================================
-// Section 3: Main FSM
+// Section 3: Main FSM declarations
 // ============================================================================
 
 localparam [3:0]
-    M_IDLE        = 4'd0,
-    M_WAIT_LTF    = 4'd1,
-    M_COLLECT_LTF = 4'd2,
-    M_DFT_ADDR    = 4'd3,
-    M_DFT_CALC    = 4'd4,
-    M_VITERBI     = 4'd5,
-    M_CHECK_SIG   = 4'd6,
-    M_DURATION    = 4'd7,
-    M_COUNTDOWN   = 4'd8;
+    M_IDLE         = 4'd0,
+    M_WAIT_LTF     = 4'd1,
+    M_COLLECT      = 4'd2,
+    M_DFT_ADDR     = 4'd3,
+    M_DFT_MULT     = 4'd9,
+    M_DFT_CALC     = 4'd4,
+    M_VITERBI      = 4'd5,
+    M_CHECK_SIG    = 4'd6,
+    M_DURATION     = 4'd7,
+    M_COUNTDOWN    = 4'd8,
+    M_RETRY        = 4'd10;
+
+// Dual DFT at 50MHz effective: 2 × (48×64×6) = 36864 clocks ≈ 369µs
+localparam [15:0] DFT_DELAY_US = 16'd372;
 
 reg [3:0]  main_fsm;
-reg [5:0]  sample_cnt;
-reg [6:0]  skip_cnt;
+reg [6:0]  sample_cnt;      // 0..127 (128-entry buffer)
+reg [8:0]  skip_cnt;        // skip between LTF and L-SIG
+reg [1:0]  collect_phase;   // 0=LTF, 1=skip CP, 2=L-SIG
 
-// ── LTF sample buffer: 8-bit I + 8-bit Q = 16 bits per entry ──
-(* ram_style = "block" *) reg [15:0] ltf_buf [0:63];
-reg [5:0]  ltf_rd_addr;
-reg [15:0] ltf_rd_data;
+// ── Sample buffer: 128 entries (LTF [0:63] + L-SIG [64:127]) ──
+(* ram_style = "distributed" *) reg [15:0] ltf_buf [0:127];
+reg [6:0]  buf_rd_addr;
+reg [15:0] buf_rd_data;
 always @(posedge clk)
-    ltf_rd_data <= ltf_buf[ltf_rd_addr];
+    buf_rd_data <= ltf_buf[buf_rd_addr];
 
-// ── Sign-only channel estimation ──
-reg [47:0] ch_sign;
-
-// ── DFT computation: 16-bit accumulator, I-channel only ──
+// ── DFT computation ──
 reg [5:0]  dft_k_idx;
 reg [5:0]  dft_n;
 reg signed [15:0] dft_sum_i;
-
-// ── Running twiddle phase counter (replaces 2× 6x6 multiply) ──
 reg [5:0]  tw_phase;
 
-reg        doing_lsig;
+// ── Channel estimation from LTF ──
+reg [47:0] ch_sign;         // 1 bit per subcarrier: sign of LTF DFT real part
+reg        doing_lsig;      // 0=LTF DFT pass, 1=L-SIG DFT pass
+reg [6:0]  dft_base;        // 0 for LTF, 64 for L-SIG
+
 reg [47:0] bpsk_bits;
 reg [47:0] coded_bits;
+reg        phase_flipped;
 
 reg        vit_start;
 wire       vit_done;
@@ -144,8 +163,44 @@ wire [23:0] vit_decoded;
 
 reg [15:0] duration_timer_us;
 reg        timer_running;
+reg [15:0] computed_duration_reg;
 
 integer mi;
+
+// ── Known LTF subcarrier pattern (802.11a Table L-6) ──
+// Returns expected sign: 0 = positive, 1 = negative
+function ltf_known;
+    input [5:0] k;
+    begin
+        case (k)
+            6'd0:  ltf_known = 0; 6'd1:  ltf_known = 0;
+            6'd2:  ltf_known = 1; 6'd3:  ltf_known = 1;
+            6'd4:  ltf_known = 0; 6'd5:  ltf_known = 0;
+            6'd6:  ltf_known = 0; 6'd7:  ltf_known = 0;
+            6'd8:  ltf_known = 0; 6'd9:  ltf_known = 0;
+            6'd10: ltf_known = 0; 6'd11: ltf_known = 1;
+            6'd12: ltf_known = 1; 6'd13: ltf_known = 0;
+            6'd14: ltf_known = 0; 6'd15: ltf_known = 0;
+            6'd16: ltf_known = 0; 6'd17: ltf_known = 1;
+            6'd18: ltf_known = 0; 6'd19: ltf_known = 0;
+            6'd20: ltf_known = 0; 6'd21: ltf_known = 0;
+            6'd22: ltf_known = 0; 6'd23: ltf_known = 0;
+            6'd24: ltf_known = 0; 6'd25: ltf_known = 0;
+            6'd26: ltf_known = 0; 6'd27: ltf_known = 0;
+            6'd28: ltf_known = 1; 6'd29: ltf_known = 1;
+            6'd30: ltf_known = 0; 6'd31: ltf_known = 0;
+            6'd32: ltf_known = 0; 6'd33: ltf_known = 0;
+            6'd34: ltf_known = 0; 6'd35: ltf_known = 0;
+            6'd36: ltf_known = 1; 6'd37: ltf_known = 1;
+            6'd38: ltf_known = 0; 6'd39: ltf_known = 0;
+            6'd40: ltf_known = 0; 6'd41: ltf_known = 0;
+            6'd42: ltf_known = 0; 6'd43: ltf_known = 0;
+            6'd44: ltf_known = 1; 6'd45: ltf_known = 1;
+            6'd46: ltf_known = 1; 6'd47: ltf_known = 0;
+            default: ltf_known = 0;
+        endcase
+    end
+endfunction
 
 // ── Subcarrier map ──
 function [5:0] subcarrier_map;
@@ -183,42 +238,6 @@ function [5:0] subcarrier_map;
     end
 endfunction
 
-// ── Known LTF data subcarrier values ──
-function signed [1:0] ltf_known;
-    input [5:0] k;
-    begin
-        case (k)
-            0: ltf_known =  2'sd1; 1: ltf_known =  2'sd1;
-            2: ltf_known = -2'sd1; 3: ltf_known = -2'sd1;
-            4: ltf_known =  2'sd1;
-            5: ltf_known = -2'sd1; 6: ltf_known =  2'sd1;
-            7: ltf_known = -2'sd1; 8: ltf_known =  2'sd1;
-            9: ltf_known =  2'sd1; 10: ltf_known =  2'sd1;
-            11: ltf_known =  2'sd1; 12: ltf_known =  2'sd1;
-            13: ltf_known =  2'sd1;
-            14: ltf_known = -2'sd1; 15: ltf_known = -2'sd1;
-            16: ltf_known =  2'sd1; 17: ltf_known =  2'sd1;
-            18: ltf_known =  2'sd1; 19: ltf_known = -2'sd1;
-            20: ltf_known =  2'sd1; 21: ltf_known =  2'sd1;
-            22: ltf_known =  2'sd1; 23: ltf_known =  2'sd1;
-            24: ltf_known =  2'sd1; 25: ltf_known = -2'sd1;
-            26: ltf_known = -2'sd1; 27: ltf_known =  2'sd1;
-            28: ltf_known =  2'sd1; 29: ltf_known = -2'sd1;
-            30: ltf_known = -2'sd1; 31: ltf_known =  2'sd1;
-            32: ltf_known = -2'sd1; 33: ltf_known = -2'sd1;
-            34: ltf_known = -2'sd1; 35: ltf_known = -2'sd1;
-            36: ltf_known = -2'sd1; 37: ltf_known =  2'sd1;
-            38: ltf_known =  2'sd1; 39: ltf_known = -2'sd1;
-            40: ltf_known = -2'sd1; 41: ltf_known =  2'sd1;
-            42: ltf_known = -2'sd1;
-            43: ltf_known = -2'sd1; 44: ltf_known =  2'sd1;
-            45: ltf_known =  2'sd1; 46: ltf_known =  2'sd1;
-            47: ltf_known =  2'sd1;
-            default: ltf_known = 2'sd1;
-        endcase
-    end
-endfunction
-
 // ── Deinterleaver ──
 function [5:0] deint_map;
     input [5:0] k;
@@ -245,17 +264,14 @@ function [5:0] deint_map;
     end
 endfunction
 
-// ── Twiddle factor ROM: 8-bit cos + 8-bit sin, Q7 (×127) ──
-// Format: {sin[7:0], cos[7:0]}, 16-bit per entry
-// Negative values in 2's complement: e.g. -12 → 244 (8'd256-12)
-(* rom_style = "block" *) reg [15:0] twiddle_rom [0:63];
+// ── Twiddle factor ROM ──
+(* rom_style = "distributed" *) reg [15:0] twiddle_rom [0:63];
 reg [5:0]  tw_rd_addr;
 reg [15:0] tw_rd_data;
 always @(posedge clk)
     tw_rd_data <= twiddle_rom[tw_rd_addr];
 
 initial begin
-    //              {  sin,     cos  }   angle = 2*pi*k/64
     twiddle_rom[0]  = {8'd0,   8'd127}; twiddle_rom[1]  = {8'd12,  8'd126};
     twiddle_rom[2]  = {8'd25,  8'd125}; twiddle_rom[3]  = {8'd37,  8'd122};
     twiddle_rom[4]  = {8'd49,  8'd117}; twiddle_rom[5]  = {8'd60,  8'd112};
@@ -293,25 +309,25 @@ end
 // ── DFT addressing ──
 wire [5:0] dft_k_bin = subcarrier_map(dft_k_idx);
 
-// ── Unpack BRAM data (8-bit signed) ──
-wire signed [7:0] ltf_sample_i = ltf_rd_data[7:0];
-wire signed [7:0] ltf_sample_q = ltf_rd_data[15:8];
+// ── Unpack buffer data (8-bit signed) ──
+wire signed [7:0] buf_sample_i = buf_rd_data[7:0];
+wire signed [7:0] buf_sample_q = buf_rd_data[15:8];
 wire signed [7:0] tw_cos = tw_rd_data[7:0];
 wire signed [7:0] tw_sin = tw_rd_data[15:8];
 
-// ── Complex multiply: I-channel ONLY (Q not needed for BPSK sign) ──
-// 8s × 8s = 16s, two products summed = 17s, >>>7 = 10s effective
+// ── Complex multiply: I-channel ONLY ──
 (* use_dsp = "yes" *) wire signed [15:0] cmult_i =
-    (ltf_sample_i * tw_cos + ltf_sample_q * tw_sin) >>> 7;
+    (buf_sample_i * tw_cos + buf_sample_q * tw_sin) >>> 7;
+
+// ── Pipeline register for cmult_i ──
+reg signed [15:0] cmult_i_pipe;
 
 // ── Final DFT real part ──
-wire signed [15:0] final_dft_i = dft_sum_i + cmult_i;
+wire signed [15:0] final_dft_i = dft_sum_i + cmult_i_pipe;
 
-// ── LTF known sign ──
-wire [1:0] ltf_val = ltf_known(dft_k_idx);
-wire ltf_is_neg = ltf_val[1];
-
-// ── BPSK demod with sign-only equalization ──
+// ── Equalized BPSK demod: use ch_sign from LTF ──
+// ch_sign[k]=0 means LTF DFT was positive (channel non-inverting)
+// ch_sign[k]=1 means LTF DFT was negative (channel inverting) → flip L-SIG
 wire bpsk_demod_bit = ~(final_dft_i[15] ^ ch_sign[dft_k_idx]);
 
 // ── Duration computation ──
@@ -350,26 +366,31 @@ opp_viterbi_k7 viterbi_inst (
 // ============================================================================
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-        main_fsm      <= M_IDLE;
-        lsig_valid    <= 0;
-        pkt_end_pulse <= 0;
-        timer_running <= 0;
-        vit_start     <= 0;
-        doing_lsig    <= 0;
-        sample_cnt    <= 0;
-        skip_cnt      <= 0;
-        dft_k_idx     <= 0;
-        dft_n         <= 0;
-        dft_sum_i     <= 0;
-        tw_phase      <= 0;
+        main_fsm       <= M_IDLE;
+        lsig_valid     <= 0;
+        pkt_end_pulse  <= 0;
+        timer_running  <= 0;
+        vit_start      <= 0;
+        sample_cnt     <= 0;
+        skip_cnt       <= 0;
+        collect_phase  <= 0;
+        phase_flipped  <= 0;
+        doing_lsig     <= 0;
+        dft_base       <= 0;
+        dft_k_idx      <= 0;
+        dft_n          <= 0;
+        dft_sum_i      <= 0;
+        tw_phase       <= 0;
+        ch_sign        <= 0;
         duration_timer_us <= 0;
         pkt_remaining_us  <= 0;
     end else begin
+        // ── Ungated defaults (every cycle) ──
         lsig_valid    <= 0;
         pkt_end_pulse <= 0;
         vit_start     <= 0;
 
-        // Duration countdown timer (runs independently)
+        // ── Duration countdown timer — UNGATED (needs 1µs precision) ──
         if (timer_running && tsf_pulse_1M) begin
             if (duration_timer_us == 16'd1) begin
                 pkt_end_pulse <= 1;
@@ -383,11 +404,20 @@ always @(posedge clk or negedge rst_n) begin
 
         case (main_fsm)
 
+        // ── UNGATED states: sample collection ──
+
         M_IDLE: begin
             if (stf_detected) begin
-                skip_cnt   <= 7'd48;
-                sample_cnt <= 0;
-                main_fsm   <= M_WAIT_LTF;
+                // After STF (160 samples plateau), skip LTF GI (32 samples)
+                // then collect LTF1 (64), skip CP (16), collect L-SIG (64)
+                skip_cnt      <= 9'd32;   // skip LTF guard interval
+                sample_cnt    <= 0;
+                collect_phase <= 2'd0;    // start with LTF collection
+                phase_flipped <= 0;
+                doing_lsig    <= 0;
+                dft_base      <= 7'd0;
+                ch_sign       <= 0;
+                main_fsm      <= M_WAIT_LTF;
             end
         end
 
@@ -397,82 +427,111 @@ always @(posedge clk or negedge rst_n) begin
                     skip_cnt <= skip_cnt - 1;
                 end else begin
                     sample_cnt <= 0;
-                    main_fsm   <= M_COLLECT_LTF;
-                    doing_lsig <= 0;
+                    main_fsm   <= M_COLLECT;
                 end
             end
         end
 
-        M_COLLECT_LTF: begin
+        M_COLLECT: begin
             if (dec_valid) begin
-                // Store truncated 8-bit I/Q in LTF buffer
-                ltf_buf[sample_cnt] <= {dec_q[15:8], dec_i[15:8]};
-                if (sample_cnt == 6'd63) begin
-                    dft_k_idx   <= 0;
-                    dft_n       <= 0;
-                    dft_sum_i   <= 0;
-                    tw_phase    <= 0;
-                    ltf_rd_addr <= 6'd0;
-                    tw_rd_addr  <= 6'd0;
-                    main_fsm    <= M_DFT_ADDR;
-                end else begin
-                    sample_cnt <= sample_cnt + 1;
+                case (collect_phase)
+                2'd0: begin
+                    // Collecting LTF (64 samples → buf[0:63])
+                    ltf_buf[sample_cnt[6:0]] <= {dec_q[11:4], dec_i[11:4]};
+                    if (sample_cnt[5:0] == 6'd63) begin
+                        // LTF done, skip LTF2(64) + L-SIG CP(16) = 80 samples
+                        skip_cnt      <= 9'd80;
+                        collect_phase <= 2'd2;
+                        main_fsm      <= M_WAIT_LTF;
+                    end else begin
+                        sample_cnt <= sample_cnt + 1;
+                    end
                 end
+                2'd2: begin
+                    // Collecting L-SIG (64 samples → buf[64:127])
+                    ltf_buf[{1'b1, sample_cnt[5:0]}] <= {dec_q[11:4], dec_i[11:4]};
+                    if (sample_cnt[5:0] == 6'd63) begin
+                        // Both LTF and L-SIG collected, start LTF DFT
+                        dft_k_idx   <= 0;
+                        dft_n       <= 0;
+                        dft_sum_i   <= 0;
+                        tw_phase    <= 0;
+                        doing_lsig  <= 0;
+                        dft_base    <= 7'd0;    // LTF at buf[0:63]
+                        buf_rd_addr <= 7'd0;
+                        tw_rd_addr  <= 6'd0;
+                        main_fsm    <= M_DFT_ADDR;
+                    end else begin
+                        sample_cnt <= sample_cnt + 1;
+                    end
+                end
+                default: begin
+                    main_fsm <= M_IDLE;
+                end
+                endcase
             end
         end
 
-        // ── DFT Pipeline Stage 1: BRAM address setup ──
-        M_DFT_ADDR: begin
+        // ── CE-GATED states: DFT + decode (effective 50MHz) ──
+
+        M_DFT_ADDR: if (ce) begin
+            main_fsm <= M_DFT_MULT;
+        end
+
+        M_DFT_MULT: if (ce) begin
+            cmult_i_pipe <= cmult_i;
             main_fsm <= M_DFT_CALC;
         end
 
-        // ── DFT Pipeline Stage 2: Multiply + Accumulate (I-only) ──
-        M_DFT_CALC: begin
-            dft_sum_i <= dft_sum_i + cmult_i;
+        M_DFT_CALC: if (ce) begin
+            dft_sum_i <= dft_sum_i + cmult_i_pipe;
 
             if (dft_n == 6'd63) begin
-                // Finished one subcarrier DFT
                 if (!doing_lsig) begin
-                    // LTF: sign-only channel estimate
-                    ch_sign <= {final_dft_i[15] ^ ltf_is_neg, ch_sign[47:1]};
+                    // LTF pass: store channel sign
+                    // ch_sign = observed_sign XOR known_sign
+                    ch_sign[dft_k_idx] <= final_dft_i[15] ^ ltf_known(dft_k_idx);
                 end else begin
-                    // L-SIG: BPSK demod
+                    // L-SIG pass: equalized BPSK demod
                     bpsk_bits <= {bpsk_demod_bit, bpsk_bits[47:1]};
                 end
 
                 if (dft_k_idx == 6'd47) begin
                     if (!doing_lsig) begin
-                        // LTF done → skip to L-SIG
-                        skip_cnt   <= 7'd80;
-                        sample_cnt <= 0;
-                        doing_lsig <= 1;
-                        main_fsm   <= M_WAIT_LTF;
+                        // LTF DFT done → start L-SIG DFT
+                        doing_lsig  <= 1;
+                        dft_base    <= 7'd64;   // L-SIG at buf[64:127]
+                        dft_k_idx   <= 0;
+                        dft_n       <= 0;
+                        dft_sum_i   <= 0;
+                        tw_phase    <= 0;
+                        buf_rd_addr <= 7'd64;
+                        tw_rd_addr  <= 6'd0;
+                        main_fsm    <= M_DFT_ADDR;
                     end else begin
-                        // L-SIG done → deinterleave + decode
+                        // L-SIG DFT done → Viterbi
                         sample_cnt <= 0;
                         main_fsm   <= M_VITERBI;
                     end
                 end else begin
-                    // Next subcarrier: reset accumulator and phase
                     dft_k_idx   <= dft_k_idx + 1;
                     dft_n       <= 0;
                     dft_sum_i   <= 0;
                     tw_phase    <= 0;
-                    ltf_rd_addr <= 6'd0;
+                    buf_rd_addr <= dft_base;
                     tw_rd_addr  <= 6'd0;
                     main_fsm    <= M_DFT_ADDR;
                 end
             end else begin
-                // Advance to next sample, update running phase
                 dft_n       <= dft_n + 1;
                 tw_phase    <= tw_phase + dft_k_bin;
-                ltf_rd_addr <= dft_n + 1;
+                buf_rd_addr <= dft_base + {1'b0, dft_n[5:0]} + 7'd1;
                 tw_rd_addr  <= tw_phase + dft_k_bin;
                 main_fsm    <= M_DFT_ADDR;
             end
         end
 
-        M_VITERBI: begin
+        M_VITERBI: if (ce) begin
             if (sample_cnt == 0) begin
                 for (mi = 0; mi < 48; mi = mi + 1)
                     coded_bits[mi] <= bpsk_bits[deint_map(mi[5:0])];
@@ -485,13 +544,22 @@ always @(posedge clk or negedge rst_n) begin
             end
         end
 
-        M_CHECK_SIG: begin
+        M_CHECK_SIG: if (ce) begin
             if (^vit_decoded[17:0] != 1'b0) begin
-                main_fsm <= M_IDLE;
+                if (!phase_flipped)
+                    main_fsm <= M_RETRY;
+                else
+                    main_fsm <= M_IDLE;
             end else if (vit_decoded[4] != 1'b0) begin
-                main_fsm <= M_IDLE;
+                if (!phase_flipped)
+                    main_fsm <= M_RETRY;
+                else
+                    main_fsm <= M_IDLE;
             end else if (vit_decoded[3] != 1'b1) begin
-                main_fsm <= M_IDLE;
+                if (!phase_flipped)
+                    main_fsm <= M_RETRY;
+                else
+                    main_fsm <= M_IDLE;
             end else begin
                 lsig_rate   <= vit_decoded[3:0];
                 lsig_length <= vit_decoded[16:5];
@@ -500,17 +568,27 @@ always @(posedge clk or negedge rst_n) begin
             end
         end
 
-        M_DURATION: begin
+        M_RETRY: if (ce) begin
+            bpsk_bits     <= ~bpsk_bits;
+            phase_flipped <= 1;
+            sample_cnt    <= 0;
+            main_fsm      <= M_VITERBI;
+        end
+
+        M_DURATION: if (ce) begin
+            computed_duration_reg <= computed_duration_us;
             main_fsm <= M_COUNTDOWN;
         end
 
-        M_COUNTDOWN: begin
-            if (!timer_running) begin
-                duration_timer_us <= computed_duration_us;
-                pkt_remaining_us  <= computed_duration_us;
+        M_COUNTDOWN: if (ce) begin
+            if (computed_duration_reg > DFT_DELAY_US) begin
+                duration_timer_us <= computed_duration_reg - DFT_DELAY_US;
+                pkt_remaining_us  <= computed_duration_reg - DFT_DELAY_US;
                 timer_running     <= 1;
-                main_fsm          <= M_IDLE;
+            end else begin
+                pkt_end_pulse <= 1;
             end
+            main_fsm <= M_IDLE;
         end
 
         default: main_fsm <= M_IDLE;
@@ -518,7 +596,7 @@ always @(posedge clk or negedge rst_n) begin
     end
 end
 
-// v17 debug: sticky flag for lsig_valid (cleared on reset only)
+// Debug: sticky flag for lsig_valid (cleared on reset only)
 reg lsig_valid_sticky;
 always @(posedge clk or negedge rst_n)
     if (!rst_n) lsig_valid_sticky <= 0;
